@@ -81,6 +81,9 @@ class StringTest {
 	void testUtf8() {
 		for (int i = 4; i < 0xffff; i += 4) {
 			char[] c = { (char) (i+0), (char) (i+1), (char) (i+2), (char) (i+3) };
+			// UTF-16 surrogate pairs are never valid UTF-8 characters and get replaced.
+			// Those will cause tests to fail, so we skip them
+			if (Character.isSurrogate((char)i) || Character.isSurrogate((char)(i+3))) continue;
 			String before = new String(c) + " " + i + "-" + (i+4);
 			LuaString ls = LuaString.valueOf(before);
 			String after = ls.tojstring();

@@ -26,6 +26,13 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 import org.luaj.vm2.lib.MathLib;
 
@@ -302,7 +309,9 @@ public class LuaString extends LuaValue {
 
 	@Override
 	public String tojstring() {
-		return decodeAsUtf8(m_bytes, m_offset, m_length);
+        if (cachedUTFDecodeString != null) return cachedUTFDecodeString;
+		cachedUTFDecodeString = decodeAsUtf8(m_bytes, m_offset, m_length);
+        return cachedUTFDecodeString;
 	}
 
 	// unary operators
@@ -849,6 +858,8 @@ public class LuaString extends LuaValue {
 		return -1;
 	}
 
+    private String cachedUTFDecodeString = null;
+
 	/**
 	 * Convert to Java String interpreting as utf8 characters.
 	 *
@@ -862,22 +873,8 @@ public class LuaString extends LuaValue {
 	 * @see #isValidUtf8()
 	 */
 	public static String decodeAsUtf8(byte[] bytes, int offset, int length) {
-		int i, j, n, b;
-		for (i = offset, j = offset+length, n = 0; i < j; ++n) {
-			switch (0xE0 & bytes[i++]) {
-			case 0xE0:
-				++i;
-			case 0xC0:
-				++i;
-			}
-		}
-		char[] chars = new char[n];
-		for (i = offset, j = offset+length, n = 0; i < j;) {
-			chars[n++] = (char) ((b = bytes[i++]) >= 0 || i >= j? b
-				: b < -32 || i+1 >= j? (b & 0x3f)<<6 | bytes[i++] & 0x3f
-					: (b & 0xf)<<12 | (bytes[i++] & 0x3f)<<6 | bytes[i++] & 0x3f);
-		}
-		return new String(chars);
+		byte[] subset = Arrays.copyOfRange(bytes, offset, offset + length);
+		return new String(subset, StandardCharsets.UTF_8);
 	}
 
 	/**
@@ -915,22 +912,19 @@ public class LuaString extends LuaValue {
 	 * @see #isValidUtf8()
 	 */
 	public static int encodeToUtf8(char[] chars, int nchars, byte[] bytes, int off) {
-		char c;
-		int j = off;
-		for (int i = 0; i < nchars; i++) {
-			if ((c = chars[i]) < 0x80) {
-				bytes[j++] = (byte) c;
-			} else if (c < 0x800) {
-				bytes[j++] = (byte) (0xC0 | c>>6 & 0x1f);
-				bytes[j++] = (byte) (0x80 | c & 0x3f);
-			} else {
-				bytes[j++] = (byte) (0xE0 | c>>12 & 0x0f);
-				bytes[j++] = (byte) (0x80 | c>>6 & 0x3f);
-				bytes[j++] = (byte) (0x80 | c & 0x3f);
-			}
-		}
-		return j-off;
+		char[] subset = Arrays.copyOfRange(chars, 0, nchars);
+		CharBuffer buf = CharBuffer.wrap(subset);
+		ByteBuffer outBuf = StandardCharsets.UTF_8.encode(buf);
+		byte[] result = Arrays.copyOfRange(outBuf.array(), outBuf.position(), outBuf.limit());
+		System.arraycopy(result, 0, bytes, off, result.length);
+		return result.length;
 	}
+
+    private static final CharsetDecoder utf8Validator = StandardCharsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT);
+
+    private Boolean isUTF8Ok = null;
 
 	/**
 	 * Check that a byte sequence is valid UTF-8
@@ -941,15 +935,17 @@ public class LuaString extends LuaValue {
 	 * @see #decodeAsUtf8(byte[], int, int)
 	 */
 	public boolean isValidUtf8() {
-		for (int i = m_offset, j = m_offset+m_length; i < j;) {
-			int c = m_bytes[i++];
-			if (c >= 0 || (c & 0xE0) == 0xC0 && i < j && (m_bytes[i++] & 0xC0) == 0x80)
-				continue;
-			if ((c & 0xF0) == 0xE0 && i+1 < j && (m_bytes[i++] & 0xC0) == 0x80 && (m_bytes[i++] & 0xC0) == 0x80)
-				continue;
+        // Strings are immutable* so we can cache this
+        if (isUTF8Ok != null) return isUTF8Ok;
+		try {
+            CharBuffer result = utf8Validator.decode(ByteBuffer.wrap(Arrays.copyOfRange(m_bytes, m_offset, m_offset + m_length)));
+            cachedUTFDecodeString = result.toString();
+            isUTF8Ok = true;
+			return true;
+		} catch (CharacterCodingException ignored) {
+            isUTF8Ok = false;
 			return false;
 		}
-		return true;
 	}
 
 	// --------------------- number conversion -----------------------
